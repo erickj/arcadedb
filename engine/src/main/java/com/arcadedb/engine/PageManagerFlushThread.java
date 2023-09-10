@@ -37,6 +37,7 @@ public class PageManagerFlushThread extends Thread {
   public final     ArrayBlockingQueue<List<MutablePage>> queue;
   private final    String                                logContext;
   private volatile boolean                               running   = true;
+  private volatile boolean                               runningPageFlush   = false;
   private final    AtomicBoolean                         suspended = new AtomicBoolean(false); // USED DURING BACKUP
 
   public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration, final String databaseName) {
@@ -84,13 +85,18 @@ public class PageManagerFlushThread extends Thread {
     final List<MutablePage> pages = queue.poll(1000L, TimeUnit.MILLISECONDS);
 
     if (pages != null) {
-      for (final MutablePage page : pages)
-        try {
-          pageManager.flushPage(page);
-        } catch (final DatabaseMetadataException e) {
-          // FILE DELETED, CONTINUE WITH THE NEXT PAGES
-          LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
-        }
+      try {
+        runningPageFlush = true;
+        for (final MutablePage page : pages)
+          try {
+            pageManager.flushPage(page);
+          } catch (final DatabaseMetadataException e) {
+            // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+            LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
+          }
+      } finally {
+        runningPageFlush = false;
+      }
     }
   }
 
@@ -104,5 +110,18 @@ public class PageManagerFlushThread extends Thread {
 
   public void close() {
     running = false;
+  }
+
+  public void stopSafe() {
+    close();
+    while (runningPageFlush) {
+      try {
+        Thread.sleep(50);
+      } catch (final InterruptedException e) {
+        break;
+      }
+    }
+
+    interrupt();
   }
 }
